@@ -1,0 +1,1267 @@
+---
+title: "Uken Analysis Notebook"
+---
+
+```{r include=FALSE}
+library(tidyverse)
+library(RSQLite)
+library(DBI)
+library(extrafont)
+library(zoo)
+
+library(Cairo)
+
+options(scipen = 999)
+```
+
+
+```{r load data, include=FALSE}
+conn <- dbConnect(SQLite(), dbname="HQInsiders.db")
+# get a list of all tables
+
+broadcastQuery <- dbSendQuery(conn, "SELECT * FROM broadcast_stats")
+broadcastData <- dbFetch(broadcastQuery, n = -1)
+
+questionQuery <- dbSendQuery(conn, "SELECT * FROM questions")
+questionData <- dbFetch(questionQuery, n = -1)
+
+answerQuery <- dbSendQuery(conn, "SELECT * FROM answers")
+answerData <- dbFetch(answerQuery, n = -1)
+
+payoutQuery <- dbSendQuery(conn, "SELECT * FROM payouts")
+payoutData <- dbFetch(payoutQuery, n = -1)
+
+questionBroadcastQuery <- dbSendQuery(conn, "select *
+from broadcast_stats b 
+left join questions q on strftime('%M',b.broadcastTime) = strftime('%M',q.questionTime)
+where date(b.broadcastTime) = date(q.questionTime)")
+questionBroadcastData <- dbFetch(questionBroadcastQuery, n = -1)
+
+
+#cleaning
+conn <- NULL
+broadcastQuery <- NULL
+questionQuery <- NULL
+answerQuery <- NULL
+payoutQuery <-NULL
+
+```
+
+
+```{r questionData summary/prep, include=FALSE}
+
+summary(questionData)
+
+questionData <- questionData %>% mutate(category = as.factor(category),
+                        questionTime = lubridate::ymd_hms(questionTime))
+
+
+questionData$category[questionData$category=="Lt"] <- "Literature"
+questionData$category[questionData$questionID==38302] <- "Music"
+questionData$category[questionData$questionID==39458] <- "Geography"
+questionData$category[questionData$questionID==39667] <- "Literature"
+questionData$category[questionData$questionID==2958] <- "Literature"
+questionData$category[questionData$questionID==44123] <- "Geography"
+questionData$category[questionData$questionID==3194] <- "Music"
+questionData$category[questionData$questionID==3206] <- "Games"
+questionData$category[questionData$questionID==3218] <- "Culture"
+questionData$category[questionData$questionID==3230] <- "Culture"
+questionData$category[questionData$questionID==3242] <- "Sports"
+questionData$category[questionData$questionID==3266] <- "TV"
+questionData$category[questionData$questionID==3278] <- "Educational"
+
+```
+
+
+```{r answerData summary/prep, include=FALSE}
+
+summary(answerData)
+
+answerData <- answerData %>% mutate(answerTime = lubridate::ymd_hms(answerTime))
+
+```
+
+```{r broadcastData summary/prep, include=FALSE}
+
+summary(broadcastData)
+
+broadcastData <- broadcastData %>% mutate(broadcastTime = lubridate::ymd_hms(broadcastTime),
+                                       connected = as.numeric(connected),
+                                       watching = as.numeric(watching),
+                                       playing = as.numeric(playing)
+                                       )
+summary(broadcastData)
+```
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+summary(questionBroadcastData)
+
+questionBroadcastData <- questionBroadcastData %>% mutate(broadcastTime = lubridate::ymd_hms(broadcastTime),
+                                       connected = as.numeric(connected),
+                                       watching = as.numeric(watching),
+                                       playing = as.numeric(playing)
+                                       )
+
+
+
+
+```
+
+###1.  Distribution model of players, how many are in each “grouping” if you can associate relationships with their average elimination point. We anticipate that there is a very small percentage of users who have won or are in a position to win, in comparison with the overall audience size.
+
+	a.  How many players only reach QN (Where N = 1-12 or 1-15) on average?
+	
+```{r include=FALSE}
+questionAnswerData <- inner_join(answerData, questionData) 
+
+fifteenShows <- questionAnswerData %>% group_by(showID) %>% 
+  summarise(maxQ = max(questionNumber)) %>% 
+  filter(maxQ > 12) %>% distinct(showID)
+#creating this for %in% filtering later
+fifteenShows <- fifteenShows$showID
+
+twelveShows <- questionAnswerData %>% group_by(showID) %>% 
+  summarise(maxQ = max(questionNumber)) %>% 
+  filter(maxQ < 13) %>% distinct(showID)
+#creating this for %in% filtering later
+twelveShows <- twelveShows$showID
+
+```
+
+Average players correct by question number - overall
+```{r echo=FALSE}
+# How many players only reach QN (Where N = 1-12 or 1-15) on average?
+
+#Overall
+questionAnswerData %>% filter(isCorrect == "True") %>% 
+  group_by(questionNumber) %>% 
+  summarise(avgCorrect = round(mean(count))) 
+
+
+```
+
+```{r}
+questionAnswerData %>% filter(isCorrect == "True" & questionNumber <= 12) %>% 
+  group_by(questionNumber) %>% 
+  summarise(avgCorrect = round(mean(count))) %>% ggplot(aes(questionNumber,avgCorrect)) + geom_col()
+
+questionAnswerData %>% filter(isCorrect == "True" & questionNumber <= 12) %>% 
+  group_by(questionNumber) %>% 
+  summarise(avgCorrect = round(mean(count))) %>% 
+  ggplot(aes(questionNumber,avgCorrect)) + geom_col()
+```
+
+
+Average correct for the games that had 12 questions
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+#12 question shows
+questionAnswerData %>% filter(showID %in% twelveShows & isCorrect == "True") %>% group_by(questionNumber) %>% 
+  summarise(avgCorrect = round(mean(count))) 
+```
+
+Average correct for the games that had 15 questions
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+#15 question shows
+questionAnswerData %>% filter(showID %in% fifteenShows & isCorrect == "True") %>% group_by(questionNumber) %>% 
+  summarise(avgCorrect = round(mean(count))) 
+```
+
+
+How many players win each game (are there a lot of people in this “top 1%” grouping)?
+	
+#### <span style="color:blue"> On average there are 303 winners per game. On average there are 828,785 people playing the game. See the below charts to show the distribution of winner counts. </span>
+
+	
+```{r include=FALSE}
+#How many players win each game (are there a lot of people in this “top 1%” grouping)?
+payoutData %>% 
+  group_by(showID) %>% 
+  summarise(winners = n()) %>% 
+  summarise(avgWinnerCount = mean(winners))
+
+```
+
+	
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+#game winning visuals
+#visual of all
+payoutData %>% 
+  group_by(showID) %>% 
+  count() %>% 
+  arrange(desc(n)) %>% 
+  ggplot(aes(n)) + geom_histogram(binwidth = 100, fill = 'red') +
+  theme_minimal(base_size=15, base_family="Impact") +
+  labs(title="Distribution of Winners Each Game",
+       subtitle="Total Games",
+       x="Winning Players",
+       y="Game Count",
+       caption="")  + 
+  theme(
+    plot.subtitle = element_text(color="#AAAAAA", size=10),
+    plot.title = element_text(family="Impact", size = 20),
+    plot.caption = element_text(color="#AAAAAA", size=18),
+    legend.position="none")
+
+#visual of 1000 players or less histogram
+payoutData %>% 
+  group_by(showID) %>% 
+  filter(n() < 1000) %>% 
+  count() %>% 
+  arrange(desc(n)) %>% 
+  ggplot(aes(n)) + geom_histogram(binwidth = 50, fill = 'red') +
+  theme_minimal(base_size=15, base_family="Impact") +
+  labs(title="Distribution of Winners Each Game",
+       subtitle="Outliers Removed",
+       x="Winning Players",
+       y="Game Count",
+       caption="")  + 
+  theme(
+    plot.subtitle = element_text(color="#AAAAAA", size=10),
+    plot.title = element_text(family="Impact", size = 20),
+    plot.caption = element_text(color="#AAAAAA", size=18),
+    legend.position="none")
+
+#visual of 1000 players or less density
+payoutData %>% 
+  group_by(showID) %>% 
+  filter(n() < 1000) %>% 
+  count() %>% 
+  ggplot(aes(n)) + geom_density(fill = 'red', colour = 'red', alpha = .54) +
+  theme_minimal(base_size=15, base_family="Impact") +
+  labs(title="Distribution of Winners Each Game",
+       subtitle="Density Plot",
+       x="Winning Players",
+       y="Density",
+       caption="")  + 
+  theme(
+    plot.subtitle = element_text(color="#AAAAAA", size=10),
+    plot.title = element_text(family="Impact", size = 20),
+    plot.caption = element_text(color="#AAAAAA", size=18),
+    legend.position="none")
+
+```
+
+```{r fig.width=10}
+
+#histogram of actual winners by game - this is a different than above because the API cuts off at 750 players as winners in the winning feed 
+#todo add higher resolution x axis
+
+questionAnswerData %>% 
+  group_by(showID) %>% 
+  slice(which.max(questionNumber)) %>% 
+  filter(questionNumber >= 12 & isCorrect == "True", count <= 5000) %>%
+  ggplot(aes(count)) + geom_histogram(binwidth = 100, fill = 'red') +
+  theme_minimal(base_size=15, base_family="Impact") +
+  labs(title="Distribution of Winners Each Game",
+       subtitle="Outliers Removed",
+       x="Winning Players",
+       y="Game Count",
+       caption="")  + 
+  theme(
+    plot.subtitle = element_text(color="#AAAAAA", size=10),
+    plot.title = element_text(family="Impact", size = 20),
+    plot.caption = element_text(color="#AAAAAA", size=18),
+    legend.position="none")
+
+
+
+```
+
+
+```{r}
+
+questionAnswerData %>% 
+  group_by(showID) %>% 
+  slice(which.max(questionNumber)) %>% 
+  filter(questionNumber >= 12 & isCorrect == "True") %>% 
+  ggplot(aes(x=as.Date(answerTime),y=count)) + geom_line(size = 1, colour = 'red') + geom_smooth() +
+  scale_x_date(date_breaks = "1 month",date_labels = "%b") +
+  theme_minimal(base_size=15, base_family="Impact") +
+  labs(title="Winners Over Time",
+       subtitle="Viewership is max by game",
+       x="Broadcast Date",
+       y="Winner Count",
+       caption=""
+       )  + 
+  theme(
+    plot.subtitle = element_text(color="#AAAAAA", size=10),
+    plot.title = element_text(family="Impact", size = 20),
+    plot.caption = element_text(color="#AAAAAA", size=18)
+    ) 
+
+```
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+
+#game winning visuals 12 question games
+#visual of all
+payoutData %>% 
+  filter(showID %in% twelveShows) %>% 
+  group_by(showID) %>% 
+  count() %>% 
+  arrange(desc(n)) %>% 
+  ggplot(aes(n)) + geom_histogram(binwidth = 100, fill = 'red') +
+  theme_minimal(base_size=15, base_family="Impact") +
+  labs(title="Distribution of Winners Each Game",
+       subtitle="12 question games",
+       x="Winning Players",
+       y="Game Count",
+       caption="")  + 
+  theme(
+    plot.subtitle = element_text(color="#AAAAAA", size=10),
+    plot.title = element_text(family="Impact", size = 20),
+    plot.caption = element_text(color="#AAAAAA", size=18),
+    legend.position="none")
+
+#visual of 1000 players or less histogram
+payoutData %>% 
+  filter(showID %in% twelveShows) %>% 
+  group_by(showID) %>% 
+  filter(n() < 1000) %>% 
+  count() %>% 
+  arrange(desc(n)) %>% 
+  ggplot(aes(n)) + geom_histogram(binwidth = 50, fill = 'red') +
+  theme_minimal(base_size=15, base_family="Impact") +
+  labs(title="Distribution of Winners Each Game",
+       subtitle="12 question games - Outliers Removed",
+       x="Winning Players",
+       y="Game Count",
+       caption="")  + 
+  theme(
+    plot.subtitle = element_text(color="#AAAAAA", size=10),
+    plot.title = element_text(family="Impact", size = 20),
+    plot.caption = element_text(color="#AAAAAA", size=18),
+    legend.position="none")
+
+#visual of 1000 players or less density
+payoutData %>% 
+  filter(showID %in% twelveShows) %>% 
+  group_by(showID) %>% 
+  filter(n() < 1000) %>% 
+  count() %>% 
+  ggplot(aes(n)) + geom_density(fill = 'red', colour = 'red', alpha = .54) +
+  theme_minimal(base_size=15, base_family="Impact") +
+  labs(title="Distribution of Winners Each Game",
+       subtitle="12 question games - Density Plot",
+       x="Winning Players",
+       y="Density",
+       caption="")  + 
+  theme(
+    plot.subtitle = element_text(color="#AAAAAA", size=10),
+    plot.title = element_text(family="Impact", size = 20),
+    plot.caption = element_text(color="#AAAAAA", size=18),
+    legend.position="none")
+```
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+#game winning visuals 15 question games
+#visual of all
+payoutData %>% 
+  filter(showID %in% fifteenShows) %>% 
+  group_by(showID) %>% 
+  count() %>% 
+  arrange(desc(n)) %>% 
+  ggplot(aes(n)) + geom_histogram(binwidth = 50, fill = 'red') +
+  theme_minimal(base_size=15, base_family="Impact") +
+  labs(title="Distribution of Winners Each Game",
+       subtitle="15 question games",
+       x="Winning Players",
+       y="Game Count",
+       caption="")  + 
+  theme(
+    plot.subtitle = element_text(color="#AAAAAA", size=10),
+    plot.title = element_text(family="Impact", size = 20),
+    plot.caption = element_text(color="#AAAAAA", size=18),
+    legend.position="none")
+
+
+#visual of 1000 players or less density
+payoutData %>% 
+  filter(showID %in% fifteenShows) %>% 
+  group_by(showID) %>% 
+  count() %>% 
+  ggplot(aes(n)) + geom_density(fill = 'red', colour = 'red', alpha = .54) +
+  theme_minimal(base_size=15, base_family="Impact") +
+  labs(title="Distribution of Winners Each Game",
+       subtitle="15 question games - Density Plot",
+       x="Winning Players",
+       y="Density",
+       caption="")  + 
+  theme(
+    plot.subtitle = element_text(color="#AAAAAA", size=10),
+    plot.title = element_text(family="Impact", size = 20),
+    plot.caption = element_text(color="#AAAAAA", size=18),
+    legend.position="none")
+```
+
+\newpage
+---------------------------------------------------------------------------------------------------------
+  
+    
+
+###2.  Is there a question category type which is the easiest and conversely, the most difficult (looking at the number of players who get the question right)? 
+Of savage questions, what categories have the most savage question results?
+
+#### <span style="color:blue"> The top 3 easiest categories would be Culture, Science and Games with correct ratios as .94, .87 and .86 respectively. The top 3 hardest categories would be Fine Arts, Fashion and Geography with correct ratios as .40, .49 and .66 respectively. </span>
+
+  
+    
+*Correct Answers / Total Answers for each category. *
+
+*Players answering questions correctly are correctCount, the total number of respondents (right or wrong) is totalCount, and the number of games where that category is used is gameCount. *
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+#create savage question DF
+savageQuestions <- questionAnswerData %>% 
+  group_by(questionID) %>% 
+  summarise(totalCount = sum(count),
+            correctCount = sum(count[isCorrect == "True"]),
+            pcntCorrect = correctCount/totalCount
+            ) %>% 
+  mutate(isSavage = ifelse(pcntCorrect <= .30,1,0)) 
+
+
+#winning ratio by category descending 
+questionAnswerData %>% 
+  group_by(category) %>% 
+  filter(!is.na(category)) %>% 
+  summarise(totalCount = sum(count),
+            correctCount = sum(count[isCorrect == "True"]),
+            pcntCorrect = correctCount/totalCount,
+            gameCount = n_distinct(showID)) %>% 
+  filter(totalCount != 701562) %>% 
+  select(category,pcntCorrect,correctCount, totalCount, gameCount) %>% 
+  arrange(desc(pcntCorrect))
+
+
+```
+  
+    
+    
+Correct Answers / Total Answer for 12 question games
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+questionAnswerData %>% 
+  filter(showID %in% twelveShows) %>% 
+  group_by(category) %>% 
+  filter(!is.na(category)) %>% 
+  summarise(totalCount = sum(count),
+            correctCount = sum(count[isCorrect == "True"]),
+            pcntCorrect = correctCount/totalCount,
+            gameCount = n_distinct(showID)) %>% 
+  filter(totalCount != 701562) %>% 
+  select(category,pcntCorrect,correctCount, totalCount, gameCount) %>% 
+  arrange(desc(pcntCorrect)) 
+```
+  
+    
+    
+Correct Answers / Total Answer for 15 question games
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+questionAnswerData %>% 
+  filter(showID %in% fifteenShows) %>% 
+  group_by(category) %>% 
+  filter(!is.na(category)) %>% 
+  summarise(totalCount = sum(count),
+            correctCount = sum(count[isCorrect == "True"]),
+            pcntCorrect = correctCount/totalCount,
+            gameCount = n_distinct(showID)) %>% 
+  filter(totalCount != 701562) %>% 
+  select(category,pcntCorrect,correctCount, totalCount, gameCount) %>% 
+  arrange(desc(pcntCorrect)) 
+```
+  
+    
+    
+<span style="color:blue"> The below chart shows that on average the game is becomming easier. We believe this is due to the prevalance of cheating and discord chat rooms, however it is equally possible that HQ has decided to make the game easier overall. </span>
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+
+questionAnswerData <- questionAnswerData %>% 
+  mutate(date = gsub("/", "-",questionTime, fixed=TRUE),
+         date = as.Date(date)
+         ) 
+
+
+questionAnswerData %>% 
+  group_by(date,questionID) %>% 
+  summarise(totalCount = sum(count),
+            correctCount = sum(count[isCorrect == "True"]),
+            pcntCorrect = correctCount/totalCount) %>% 
+  summarise(avgPcntCorrect = mean(pcntCorrect)) %>% 
+  ggplot(aes(date,avgPcntCorrect)) + geom_line(size = 1, colour = 'red') + geom_smooth() +
+  scale_x_date(date_breaks = "1 month",date_labels = "%b") +
+  theme_minimal(base_size=15, base_family="Impact") +
+  labs(title="Average Correct % by Question and Game",
+       subtitle="",
+       x="Date",
+       y="Avg Pcnt Correct",
+       caption="")  + 
+  theme(
+    plot.subtitle = element_text(color="#AAAAAA", size=10),
+    plot.title = element_text(family="Impact", size = 20),
+    plot.caption = element_text(color="#AAAAAA", size=18),
+    legend.position="none")
+
+```
+
+  
+    
+    
+Savage Question Ratios (Savage Count / Total Count for each category) Overall 
+
+*Number of times a question from a category has been answered incorrectly by more than 70% of respondents is savageQuestionCount. Number of times questions have been asked in a category is totalQuestionsinCategory. Number of games containing a question from a category is gameCount.*
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+#savage question ratio
+inner_join(questionAnswerData, savageQuestions) %>% 
+  group_by(category) %>% 
+  summarise(savageRatio = sum(isSavage/3)/n_distinct(questionID),
+            savageQuestionCount = sum(isSavage/3), 
+            totalQuestionsInCategory = n_distinct(questionID),
+            gameCount = n_distinct(showID)
+            ) %>% 
+  arrange(desc(savageRatio)) 
+
+```
+
+Savage Question Ratios (Savage Count / Total Count for each category) 12 question games 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+#savage question ratio
+inner_join(questionAnswerData, savageQuestions) %>% 
+  filter(showID %in% twelveShows) %>% 
+  group_by(category) %>% 
+  summarise(savageRatio = sum(isSavage/3)/n_distinct(questionID),
+            savageQuestionCount = sum(isSavage/3), 
+            totalQuestionsInCategory = n_distinct(questionID),
+            gameCount = n_distinct(showID)
+            ) %>% 
+  arrange(desc(savageRatio)) 
+
+```
+
+Savage Question Ratios (Savage Count / Total Count for each category) 15 question games 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+#savage question ratio
+inner_join(questionAnswerData, savageQuestions) %>% 
+  filter(showID %in% fifteenShows) %>% 
+  group_by(category) %>% 
+  summarise(savageRatio = sum(isSavage/3)/n_distinct(questionID),
+            savageQuestionCount = sum(isSavage/3), 
+            totalQuestionsInCategory = n_distinct(questionID),
+            gameCount = n_distinct(showID)
+            ) %>% 
+  arrange(desc(savageRatio)) 
+
+```
+
+
+ We would like to analyze active players to viewers as a ratio, and compare across multiple episodes to see if there is any particular correlation that can be drawn with respect to hosts, game type, game time duration, etc. So we would need to see the active players to viewers as a ratio for each episode(*Data will be collected from video archives (If available on YouTube)):
+	
+	a)  At the end of each game. *End of game will be defined as when the answer screen pops up for the final question 
+	
+	b)  Per question of each game
+	
+	  
+	    
+	
+#### <span style="color:blue"> Hosts are not a statistically significant factor when looking at viewership ratios when we modeled this. Game type such as special sponsored games do have a statistically significant correlation. This may seem counterintuitive as sponsored games usually have a celebrity host or co-host however prize amount is really the influencing factor here. With that being said even when comparing amongst non-sponsored games, hosts had no statistical significance on viewership ratios. Game time duration is significant in that sponsored games normally last longer, since that prize amount is much higher, players tend to stick around longer. Some of the highest viewership ratios can be seen on shows with 15 questions. </span>
+
+  
+    
+      
+      
+
+Average viewership ratio by question number overall games.
+*Viewership ratio is calculated as:*
+*viewers = (connected players - playing players)*
+*viewershipRatio = (viewers/playing)*
+*avgPlayers = mean(players) grouped by question number*
+*avgPlayers is not the denominator in the viewership ratio equation. viewership ratio is calculated as actuals and then finally as an average of viewership ratio grouped by question number.*
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+#overall 
+questionBroadcastData %>% 
+  mutate(
+  viewers = connected-playing,
+  viewershipRatio = (viewers/playing),
+  players = playing
+  ) %>%
+  group_by(questionNumber) %>% 
+  summarise(avgViewershipRatio = round(mean(viewershipRatio),2),
+            avgViewerCount = round(mean(viewers)),
+            avgPlayers = round(mean(players))
+            ) 
+
+```
+Average viewership ratio by question number - games with 12 questions.
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+#12 question games 
+questionBroadcastData %>% 
+  filter(showID %in% twelveShows) %>% 
+  mutate(
+  viewers = connected-playing,
+  viewershipRatio = (viewers/playing),
+  players = playing
+  ) %>%
+  group_by(questionNumber) %>% 
+  summarise(avgViewershipRatio = round(mean(viewershipRatio),2),
+            avgViewerCount = round(mean(viewers)),
+            avgPlayers = round(mean(players))
+            ) 
+```
+
+Average viewership ratio by question number - games with 15 questions.
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+#15 question games
+questionBroadcastData %>% 
+  filter(showID %in% fifteenShows) %>% 
+  mutate(
+  viewers = connected-playing,
+  viewershipRatio = (viewers/playing),
+  players = playing
+  ) %>%
+  group_by(questionNumber) %>% 
+  summarise(avgViewershipRatio = round(mean(viewershipRatio),2),
+            avgViewerCount = round(mean(viewers)),
+            avgPlayers = round(mean(players))
+            ) 
+```
+
+
+Sample of viewership ratios by show and question number
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+questionBroadcastData %>% 
+  mutate(
+  viewers = connected-playing,
+  viewershipRatio = (viewers/playing)
+  ) %>%
+  group_by(showID, questionNumber) %>% 
+  summarise(avgViewershipRatio = round(mean(viewershipRatio),2),
+            avgViewerCount = round(mean(viewers))
+            ) 
+
+```
+
+Sample of viewership ratios of last question of each game by show and question number
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+questionBroadcastData %>% 
+  mutate(
+  viewers = connected-playing,
+  viewershipRatio = (viewers/playing)
+  ) %>%
+  group_by(showID, questionNumber) %>% 
+  summarise(avgViewershipRatio = round(mean(viewershipRatio),2),
+            avgViewerCount = round(mean(viewers))
+            ) %>% filter(questionNumber == 12 | questionNumber == 15)  
+
+```
+	
+	
+	
+Viewership ratio over time since launch, has it improved with the improved content and features such as the guest hosts and newer show formats?
+
+
+#### <span style="color:blue"> Viewership ratios have remained relatively flat over time. When modeling guest hosts and show formats we do not see any statistically significant correlations. There are statistically significant correlations when looking at time of day, day of week, and prize amount however. The findings for this are explained in the other questions in the report below. </span>
+
+*Viwership ratio calculation: connected players - playing players. This leaves us with viewer count. The ratio is then defined as viewer count / playing count. *
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+
+#will use metric of connected-playing = viewer count. We can reasonably conclude that anyone not playing is simply watching/viewing. 
+
+viewerRatios <- broadcastData %>% 
+  filter(connected > 0 & playing > 0 & watching > 0) %>% 
+  mutate(
+  viewers = connected-playing,
+  viewershipRatio = (viewers/playing)
+  ) 
+
+
+broadcastData %>% 
+  filter(connected > 0 & playing > 0 & watching > 0) %>% 
+  mutate(
+  viewers = connected-playing,
+  viewershipRatio = (viewers/playing)
+  ) %>% 
+  filter(viewers > 0)
+
+
+hqHosts <- read.csv("hqHosts.csv", header = TRUE, sep = ",", quote = "\"",
+         dec = ".", fill = TRUE, comment.char = "")
+
+hqHosts <- hqHosts %>% 
+  mutate(Date = lubridate::mdy(Date),
+         showID = as.numeric(as.character(ShowID)),
+         Host = trimws(Host),
+         Host = ifelse(as.character(Host)!="", Host, NA)
+         )
+
+
+left_join(viewerRatios,hqHosts)
+
+
+left_join(viewerRatios,hqHosts) %>% 
+  group_by(showID,date = as.Date(broadcastTime), Host) %>% 
+  summarise(avgViewershipRatio = mean(viewershipRatio)) %>% 
+  filter(avgViewershipRatio < 2000 ) %>% 
+  ggplot(aes(x=date,y=avgViewershipRatio, colour = as.factor(Host))) + geom_point()
+
+
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+viewerRatios %>% 
+  group_by(showID, month = as.Date(broadcastTime)) %>% 
+  summarise(avgViewershipRatio = mean(viewershipRatio)) %>% 
+  filter(avgViewershipRatio < 1000 & avgViewershipRatio > 2) %>% 
+  ggplot(aes(x=month,y=avgViewershipRatio)) + geom_point() + geom_smooth() +
+  scale_x_date(date_breaks = "1 month",date_labels = "%b") +
+  theme_minimal(base_size=15, base_family="Impact") +
+  labs(title="Average Viewership Ratio Over Time",
+       subtitle="Viewership ratio is average of entire game, each dot is 1 game. Outliers excluded.",
+       x="Broadcast Date",
+       y="Viewership Ratio as %",
+       caption="")  + 
+  theme(
+    plot.subtitle = element_text(color="#AAAAAA", size=10),
+    plot.title = element_text(family="Impact", size = 20),
+    plot.caption = element_text(color="#AAAAAA", size=18),
+    legend.position="none") 
+```
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+left_join(viewerRatios,hqHosts) %>% 
+  group_by(showID, month = as.Date(broadcastTime), Host) %>% 
+  summarise(avgViewershipRatio = mean(viewershipRatio)) %>% 
+  filter(avgViewershipRatio < 1000 & avgViewershipRatio > 2) %>% 
+  ggplot(aes(x=month,y=avgViewershipRatio, colour = as.factor(Host))) + geom_point() +
+  scale_x_date(date_breaks = "1 month",date_labels = "%b") +
+  theme_minimal(base_size=15, base_family="Impact") +
+  labs(title="Average Viewership Ratio Over Time (Host Colored)",
+       subtitle="Viewership ratio is average of entire game, each dot is 1 game. Outliers excluded.",
+       x="Broadcast Date",
+       y="Viewership Ratio as %",
+       caption=""
+       )  + 
+  theme(
+    plot.subtitle = element_text(color="#AAAAAA", size=10),
+    plot.title = element_text(family="Impact", size = 20),
+    plot.caption = element_text(color="#AAAAAA", size=18)
+    ) 
+```
+
+Is there any correlation we can draw between the number of installs since launch and the viewership per episode?
+
+<span style="color:blue"> ####There is a fairly strong correlation. 
+####A 1 unit increase in installs is associated with a 13.86 increase in viewership. Installs by day accounts for 50% of the variation in viewership data. As noted previously other factors which have a significant effect on viewership are time of day, day of week and prize amount. </span>
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+
+hqDownloads <- read.csv("hqDownloads.csv", header = TRUE, sep = ",", quote = "\"",
+         dec = ".", fill = TRUE, comment.char = "")
+
+hqDownloads <- hqDownloads %>% mutate(
+  date = lubridate::mdy(Period)
+)
+
+totalViewersbyDay <- broadcastData %>%
+  select(broadcastTime,connected) %>% 
+  group_by(date = as.Date(broadcastTime)) %>% 
+  summarise(maxPlayers = max(connected))
+
+
+hqDownloadsbyDay <- hqDownloads %>% 
+  filter(Downloads > 0) %>% 
+  group_by(date) %>% 
+  summarise(totalDownloads = sum(Downloads))
+
+
+download.lm.data <- left_join(totalViewersbyDay, hqDownloadsbyDay, by=c("date","date"))
+download.lm.data <- download.lm.data %>% filter(maxPlayers < 3000000)
+
+#need to remove extreme audience outliers 
+download.lm.data %>% 
+  ggplot(aes(x=maxPlayers,y=totalDownloads)) + geom_point() + geom_smooth()
+
+#this linear model is a decent fit, the model kind of breaks down when we start getting into huge viewship games. I suspect this is due to payout amount affecting viewership which the model is not accounting for. 
+options(scipen=999)
+lm.downloads <- lm(maxPlayers ~ totalDownloads,download.lm.data)
+summary(lm.downloads)
+plot(lm.downloads)
+
+#a 1 unit increase in installs is associated with a 13.86 increase in viewership. Installs by day accounts for 50% of the variation in the data. 
+
+
+```
+
+How does the show by show audience graph look over time?
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+#This is a visual of maximum players by game over time
+
+totalViewersbyDay %>% 
+  filter(maxPlayers < 3000000) %>% 
+  ggplot(aes(x=date,y=maxPlayers)) + geom_line(size = 1, colour = 'red') + geom_smooth() +
+  scale_x_date(date_breaks = "1 month",date_labels = "%b") +
+  theme_minimal(base_size=15, base_family="Impact") +
+  labs(title="Viewership Over Time",
+       subtitle="Viewership is max by game",
+       x="Broadcast Date",
+       y="Viewership",
+       caption=""
+       )  + 
+  theme(
+    plot.subtitle = element_text(color="#AAAAAA", size=10),
+    plot.title = element_text(family="Impact", size = 20),
+    plot.caption = element_text(color="#AAAAAA", size=18)
+    ) 
+
+```
+
+
+ Are there certain days and times of week that audiences are typically larger/smaller. Is there a predictive pattern? 
+
+#### <span style="color:blue"> Time of day is a statistically significant factor. Compared to afternoon games, evening games have an average of 244,380 more players. 
+
+####Day of week is only statistically significant for Sunday. Evening games on Sunday - which have a prize greater than 5,000 USD (mention prize because nearly all Sunday games have a larger prize than what a normal game would have) have an average of 845,020 more players. </span>
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+
+dt.lm.broadcastData <- broadcastData %>% 
+  mutate(dayOfWeek = lubridate::wday(broadcastTime,week_start = getOption("lubridate.week.start", 1)),
+         timeOfDay = lubridate::hour(broadcastTime),
+         fullDate = as.Date(broadcastTime)
+         ) %>% 
+  group_by(fullDate,dayOfWeek,timeOfDay) %>% 
+  summarise(maxPlayers = max(connected)) 
+
+#day of week graph 
+  dt.lm.broadcastData %>% 
+  gather(key,value,timeOfDay,-dayOfWeek,-maxPlayers) %>% 
+  ggplot(aes(x=fullDate,y=maxPlayers, colour = as.factor(dayOfWeek))) + geom_line()
+              
+
+#hour of day graph 
+  dt.lm.broadcastData %>% 
+  gather(key,value,timeOfDay,-dayOfWeek,-maxPlayers,-timeOfDay) %>% 
+  ggplot(aes(x=fullDate,y=maxPlayers, colour = as.factor(timeOfDay))) + geom_line()
+
+
+lm.viewers <- lm(maxPlayers ~ as.factor(dayOfWeek),dt.lm.broadcastData)
+summary(lm.viewers)
+
+
+
+```
+
+
+How are in-game engagement metrics (staying in the game after loss) impacted by the sponsorships and guest hosts? We can give statistics for this but there may not be enough of a sample size to make confident conclusions.
+
+####<span style="color:blue">
+Sponsored games have a statistically significant relationship to engagement. Compared to non-sponsored games, a sponsored game will have an average of 812,022 more players. A sponsored game will have an average of 8.6% better average engagement ratio in the game, compared to non-sponsored games. 
+</span>
+
+*Engagement ratio is calculated as viewers = (connected players - playing players), engagementRatio = (viewers/playing players) by each game and questions as an average.* 
+
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+# fit=lm(avgViewershipRatio ~ Host + PrizeCat, data=modeldata)
+# summary(fit)
+```
+
+
+How many users are using extra lives each game? We cannot answer this exactly, but we can make some very general estimations on extrapolated data.
+
+#### <span style="color:blue"> Overall, on average 641 extra lives are used each game. Overall each month on average will see ~38,779 extra lives being used. </span>
+
+*We calculate this by capturing the uptick in playing players on each question and assuming these are players using an extra life. Because we cannot capture actuals the extra life figure will vary but we feel this is a pretty good baseline. *
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+livesData <- broadcastData %>%
+    filter(watching > 0 & broadcastTime > '2018-04-01') %>% 
+    group_by(showID) %>%
+    arrange(broadcastTime) %>%
+    mutate(diff = playing - lag(playing, default=first(playing)),
+           avgLives = mean(diff)
+           ) %>% 
+    arrange(desc(diff))
+
+
+#this shows that there has been 77558 lives that have been used in April through May. So on average 38779 lives are used each month. 
+livesData %>% 
+  filter(diff > 0 & lubridate::minute(broadcastTime) > 6) %>%  
+  group_by(showID) %>% 
+  summarise(
+    avgLives = mean(diff)
+  ) %>% 
+  summarise(
+    totalAvgLives = sum(avgLives),
+    avgLivesPergame = mean(avgLives)
+  ) 
+```
+
+12 question games and average lives 
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+#12 question games only
+livesData %>% 
+  filter(diff > 0 & lubridate::minute(broadcastTime) > 6 & showID %in% twelveShows) %>%  
+  group_by(showID) %>% 
+  summarise(
+    avgLives = mean(diff)
+  ) %>% 
+  summarise(
+    totalAvgLivesPerMonth = round(sum(avgLives)/2),
+    avgLivesPerGame = round(mean(avgLives)/2)
+  ) 
+```
+
+15 question games and average lives 
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+#15 question games only
+livesData %>% 
+  filter(diff > 0 & lubridate::minute(broadcastTime) > 6 & showID %in% fifteenShows) %>%  
+  group_by(showID) %>% 
+  summarise(
+    avgLives = mean(diff)
+  ) %>% 
+  summarise(
+    totalAvgLivesPerMonth = round(sum(avgLives)/2),
+    avgLivesPerGame = round(mean(avgLives)/2)
+  ) 
+```
+
+Is the correlation between dropping out after winning purely tied to a player losing, or is it tied to length of game?
+
+#### <span style="color:blue"> Length of game has an effect on viewership (players who lost but have not dropped out of the game) There is always a group of players who will stick around until the very end. On average games that last 12 minutes will have 89,932 players still watching, a game running 15 minutes will only have 56,991 players on average watching. But length of game will only account for ~39% of the variation in viewership.  Most games will last around 12 minutes once started. </span>
+
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+
+broadcastDataEnd.lm <- broadcastData %>% 
+  filter(lubridate::minute(broadcastTime) > 00 & lubridate::minute(broadcastTime) <= 17 & lubridate::hour(broadcastTime) == 13)
+
+
+
+end.lm <- lm(broadcastDataEnd.lm$watching ~ as.factor(lubridate::minute(broadcastDataEnd.lm$broadcastTime))) 
+summary(end.lm)
+                
+
+```
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+broadcastData %>% 
+  group_by(showID) %>%
+  arrange(broadcastTime) %>%
+  filter(row_number()==n() & broadcastTime > '2018-04-01') %>% 
+  summarise(endWatching = watching) %>% 
+  summarise(avgEndWatching = mean(endWatching)) 
+  
+```
+
+
+<span style="color:blue"> The charts below show that the viewership peaks around 8-10 minutes into the game. It is important to know that viewership does not drop off nearly as fast as players who are being eliminated. Also note the number of outlier games in the evening graph which were due to sponsored games. These charts are for overall games. </span>
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+broadcastData %>% 
+  filter(lubridate::minute(broadcastTime) > 00 & lubridate::minute(broadcastTime) <= 17 & lubridate::hour(broadcastTime) == 13 & broadcastTime > '2018-04-01') %>% 
+  group_by(showID,minute = lubridate::minute(broadcastTime)) %>% 
+  summarise(averageWatchers = mean(watching)) %>% 
+  ggplot(aes(x=minute, y=averageWatchers,group = showID)) + geom_line(alpha = 1/8, colour = 'red', size = 1) + theme(legend.position="none") + 
+  theme_minimal(base_size=15, base_family="Impact") +
+  labs(title="Viewership Over Time (Afternoon Games)",
+       subtitle="Viewership is max by minute by game",
+       x="Game Minute",
+       y="Viewership",
+       caption=""
+       )  + 
+  theme(
+    plot.subtitle = element_text(color="#AAAAAA", size=10),
+    plot.title = element_text(family="Impact", size = 20),
+    plot.caption = element_text(color="#AAAAAA", size=18)
+    ) 
+
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+broadcastData %>% 
+  filter(lubridate::minute(broadcastTime) > 00 & lubridate::minute(broadcastTime) <= 17 & lubridate::hour(broadcastTime) == 19 & broadcastTime > '2018-04-01') %>% 
+  group_by(showID,minute = lubridate::minute(broadcastTime)) %>% 
+  summarise(averageWatchers = mean(watching)) %>% 
+  ggplot(aes(x=minute, y=averageWatchers, group = showID)) + geom_line(alpha = 1/8, colour = 'red', size = 1) + theme(legend.position="none") + 
+  theme_minimal(base_size=15, base_family="Impact") +
+  labs(title="Viewership Over Time (Evening Games)",
+       subtitle="Viewership is max by minute by game",
+       x="Game Minute",
+       y="Viewership",
+       caption=""
+       )  + 
+  theme(
+    plot.subtitle = element_text(color="#AAAAAA", size=10),
+    plot.title = element_text(family="Impact", size = 20),
+    plot.caption = element_text(color="#AAAAAA", size=18)
+    ) 
+
+```
+
+viwership over time - games with 15 questions only
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+broadcastData %>% 
+  filter(lubridate::minute(broadcastTime) > 00  & showID %in% fifteenShows) %>% 
+  group_by(showID,minute = lubridate::minute(broadcastTime)) %>% 
+  summarise(averageWatchers = mean(watching)) %>% 
+  ggplot(aes(x=minute, y=averageWatchers, group = showID)) + geom_line(alpha = 1/3, colour = 'red', size = 1) + theme(legend.position="none") + 
+  theme_minimal(base_size=15, base_family="Impact") +
+  labs(title="Viewership Over Time (Evening Games)",
+       subtitle="Viewership is max by minute by game",
+       x="Game Minute",
+       y="Viewership",
+       caption=""
+       )  + 
+  theme(
+    plot.subtitle = element_text(color="#AAAAAA", size=10),
+    plot.title = element_text(family="Impact", size = 20),
+    plot.caption = element_text(color="#AAAAAA", size=18)
+    ) 
+
+```
+
+What are the basic retention metrics. We do not have this data but we could potentially make a educated estimate on what retention might be like. 
+
+Compare estimated download with the number of users active, over time. Utilize this comparison to gauge approximate retention at a very high level.
+
+#### <span style="color:blue"> Based on the data given to us for downloads there have been 9,884,204 downloads of HQ trivia. An average game will see 828,785 players. What this tells us is that most recently only ~8.4% of people who have downloaded the game will consitently use it. </span>
+
+<span style="color:blue"> We also experimented with a few different ways to help understand retention as can be seen below: </span>
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+# hqDownloadsbyDay %>% summarise(
+#   total = sum(totalDownloads)
+# )
+
+cumhqDownloadsbyDay <- hqDownloadsbyDay  %>% arrange(date) %>% mutate(cumulativeDownloads = cumsum(totalDownloads)) 
+
+inner_join(cumhqDownloadsbyDay,totalViewersbyDay) %>% 
+  filter(maxPlayers < 3000000) %>% 
+  ggplot(aes(date)) + 
+  geom_line(aes(y=maxPlayers, color = "maxPlayers")) +
+  geom_line(aes(y=cumulativeDownloads, color = "cumulativeDownloads")) +
+  scale_x_date(date_breaks = "1 month",date_labels = "%b") +
+  theme_minimal(base_size=15, base_family="Impact") +
+  labs(title="Viewership Over Time vs Cumulative Downloads",
+       subtitle="Viewership is max by game",
+       x="Broadcast Date",
+       y="Cumulative Downloads",
+       caption=""
+       )  + 
+  theme(
+    plot.subtitle = element_text(color="#AAAAAA", size=10),
+    plot.title = element_text(family="Impact", size = 20),
+    plot.caption = element_text(color="#AAAAAA", size=18)
+    ) 
+
+
+
+
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+inner_join(cumhqDownloadsbyDay,totalViewersbyDay) %>% 
+  filter(maxPlayers < 3000000) %>%
+  mutate(usersPcntDownloads = maxPlayers/cumulativeDownloads) %>% 
+  group_by(date) %>% 
+  summarise(avgRetained = mean(usersPcntDownloads)) %>% 
+  ggplot(aes(date,avgRetained)) + geom_line(colour = 'red', size = 1) +
+  scale_x_date(date_breaks = "1 month",date_labels = "%b") +
+  theme_minimal(base_size=15, base_family="Impact") +
+  labs(title="Max Players / Cumulative Downloads - Retention",
+       subtitle="Average Retained over Time",
+       x="Date",
+       y="Average Retained %",
+       caption=""
+       )  + 
+  theme(
+    plot.subtitle = element_text(color="#AAAAAA", size=10),
+    plot.title = element_text(family="Impact", size = 20),
+    plot.caption = element_text(color="#AAAAAA", size=18)
+    ) 
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+inner_join(cumhqDownloadsbyDay,totalViewersbyDay) %>% 
+  filter(maxPlayers < 3000000) %>%
+  mutate(usersPcntDownloads = maxPlayers/totalDownloads) %>% 
+  group_by(date) %>% 
+  summarise(avgRetained = mean(usersPcntDownloads)) %>% 
+  ggplot(aes(date,avgRetained)) + geom_line(colour = 'red', size = 1) +
+  scale_x_date(date_breaks = "1 month",date_labels = "%b") +
+  theme_minimal(base_size=15, base_family="Impact") +
+  labs(title="Max Players / Total Downloads by Day - Retention",
+       subtitle="Max Players by day over total downloads on that day (EX. 969096 players / 44546 Downloads = 21.75)",
+       x="Date",
+       y="Average Retained Ratio",
+       caption=""
+       )  + 
+  theme(
+    plot.subtitle = element_text(color="#AAAAAA", size=10),
+    plot.title = element_text(family="Impact", size = 20),
+    plot.caption = element_text(color="#AAAAAA", size=18)
+    ) 
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+inner_join(cumhqDownloadsbyDay,totalViewersbyDay) %>% 
+  mutate(usersPcntDownloads = maxPlayers/totalDownloads) 
+```
+
+Compare key timeline points, such as the $250K game, the guest hosts, etc. with CSV analysis. We are essentially looking to line up the key things that happened together. So looking at the CSV of downloads we provided to you, we wanted to understand if there was a special sponsored game that helped spike new downloads, or maybe a bigger prize pot, or maybe something else?
+
+
+#### <span style="color:blue"> We modeled the effect of special sponsored games, high value games with prizes greater than 5k USD, different Hosts and the twitter accouncement of the ready player one game. Unfortunately we could not confirm that any of these were actually statistically significant. These are hard to model as we do not have a control group to compare against to draw an actual cause and effect relationship. With that being said, the ready player one game had a ~70% probability of being significant, which was the strongest of the variables we tested on the affect of downloads by day. We do not believe that the variables we tested were truly independent events to draw a causal relationship. Advertising, twitter mentions, social media in general were probably bigger factors in the special sponsored games and downloads. We currently do not have a way to measure the media/social media impact. </span>
+
+#### <span style="color:blue"> Even though a model was unable to capture this relationship given the data we have available, there is clearly a trend in downloads when plotting over time. We have attached a very basic graph which shows this. Note that near the end of December, when some of the first big prize games were being ran, that the downloads started to increase significantly from the end of December to February where they peaked. The downloads started to decline near the end of Feb, despite the 25k and 50k prizes that were offered in March. The game downloads did not see a giant increase until the announcement of the Ready Player One game and Nike game where 300k was being given away. This seems to have boosted downloads significantly until the end of April. Clearly there is an effect with these announcements and we suspect that it is the social media buzz/media combined with word of mouth that prompted so many people to download the game.  </span>
+```{r message=FALSE, warning=FALSE, include=FALSE}
+#preparing for modeling 
+
+dataFrameFourteen <- inner_join(cumhqDownloadsbyDay,hqHosts, by = c('date' = 'Date'))
+
+payouts1 <- payoutData %>% 
+  group_by(date = as.Date(broadcastTime)) %>% 
+  summarise(prize = sum(as.numeric(prize))) %>% 
+  filter(prize > 5100)
+
+#I dont want this running each time overwriting my manual changes. 
+# left_join(dataFrameFourteen,payouts1, by = c('date'='date')) %>% 
+  # mutate(isBigPrize = ifelse(is.na(prize),0,1)) %>% write.csv('downloadAnalysis.csv', row.names = FALSE)
+
+#I manually tagged dates with sponsorships and even included the annoucnement of ready player one on the 25th. 
+
+downloadAnalysis <- read.csv("downloadAnalysis.csv", header = TRUE, sep = ",", quote = "\"",
+         dec = ".", fill = TRUE, comment.char = "")
+
+downloadAnalysis <- downloadAnalysis %>% mutate(
+  date = as.character(date),
+  date = lubridate::mdy(date)
+)
+
+
+```
+
+
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+downloadModel <- lm(totalDownloads ~
+                      isBigPrize + sponsored, data = downloadAnalysis)
+summary(downloadModel)
+```
+
+```{r echo=FALSE, fig.height=5, fig.width=9, message=FALSE, warning=FALSE}
+downloadAnalysis %>% ggplot(aes(x=date,y=totalDownloads, colour=sponsored)) + geom_point() + scale_x_date(date_breaks = "1 month",date_labels = "%b") + 
+  geom_vline(xintercept = as.numeric(as.Date("2018-03-04")), linetype=4) +
+  geom_vline(xintercept = as.numeric(as.Date("2018-03-25")), linetype=4) +
+  geom_vline(xintercept = as.numeric(as.Date("2018-02-18")), linetype=4) +
+  geom_vline(xintercept = as.numeric(as.Date("2017-12-24")), linetype=4) +
+  geom_text(aes(x=as.Date("2018-03-25"), label="\nReady Player One Announcement", y=40000), colour="blue", angle=90, text=element_text(size=11)) +
+  geom_text(aes(x=as.Date("2018-02-18"), label="\n25k Prize", y=40000), colour="blue", angle=90, text=element_text(size=11)) + 
+  geom_text(aes(x=as.Date("2018-03-4"), label="\n50k Prize", y=40000), colour="blue", angle=90, text=element_text(size=11)) + 
+  geom_text(aes(x=as.Date("2017-12-24"), label="\n24k Prize", y=40000), colour="blue", angle=90, text=element_text(size=11)) +
+  theme_minimal(base_size=15, base_family="Impact") +
+  labs(title="Total Downloads by Day - Key Events",
+       subtitle="total downloads by day - colored by sponsored games",
+       x="Date",
+       y="Total Downloads",
+       caption=""
+       )  + 
+  theme(
+    plot.subtitle = element_text(color="#AAAAAA", size=10),
+    plot.title = element_text(family="Impact", size = 20),
+    plot.caption = element_text(color="#AAAAAA", size=18)
+    ) 
+ 
+  
+```
+
+```{r}
+# max players by game - request by uken - old version 
+
+broadcastData %>% 
+  group_by(date = as.Date(broadcastTime),HourMST = lubridate::hour(broadcastTime), showID) %>% 
+  summarise(maxPlayersConnected = max(connected),
+            maxPlayersPlaying = max(playing),
+            maxViewership = maxPlayersConnected-maxPlayersPlaying) %>% 
+ write.csv(file = "maxViewershipByGame.csv")
+```
+
+```{r}
+# max players by game - request by uken
+broadcastData %>% 
+  group_by(date = as.Date(broadcastTime),HourMST = lubridate::hour(broadcastTime), showID) %>% 
+  summarise(maxPlayersConnected = max(connected),
+            maxPlayersPlaying = max(playing),
+            maxViewership = max(connected-playing),
+            maxViewership = ifelse(maxViewership < 0,0,maxViewership)) %>% 
+ write.csv(file = "maxViewershipByGame.csv")
+
+
+broadcastData %>% 
+  mutate(viewership = connected-playing,
+         viewership = ifelse(viewership < 0,0,viewership)) %>% 
+ write.csv(file = "ViewershipByGame.csv")
+```
+
+
+
+```{r}
+
+payoutData <- payoutData %>% 
+  mutate(prize = as.numeric(gsub('[$]', '', prize)),
+         broadcastTime = lubridate::ymd_hms(broadcastTime)
+         )
+
+payoutData %>%
+  group_by(date = as.Date(broadcastTime)) %>% 
+  summarize(avgWinnings = round(mean(prize),2)) %>% 
+  filter(avgWinnings < 200) %>% 
+  ggplot(aes(date,avgWinnings)) + geom_line(colour = 'red', size = 1) +
+  geom_smooth() +
+  scale_x_date(date_breaks = "1 month",date_labels = "%b") +
+  theme_minimal(base_size=15, base_family="Impact") +
+  labs(title="Average Winning Amount Over Time",
+       subtitle="Outliers Removed - Average by Day",
+       x="Date",
+       y="Average Winnings",
+       caption=""
+       )  + 
+  theme(
+    plot.subtitle = element_text(color="#AAAAAA", size=10),
+    plot.title = element_text(family="Impact", size = 20),
+    plot.caption = element_text(color="#AAAAAA", size=18)
+    ) 
+  
+summary(payoutData$prize)
+
+```
+
+```{r}
+payoutData %>%
+  group_by(date = lubridate::hour(broadcastTime)) %>% 
+  summarize(avgWinnings = round(mean(prize,na.rm = TRUE),2))
+
+payoutData %>%
+  group_by(month = lubridate::month(broadcastTime),year = lubridate::year(broadcastTime)) %>% 
+  summarize(avgWinnings = round(mean(prize,na.rm = TRUE),2))
+  
+```
+
+
+```{r}
+broadcastData %>% unique(broadcastData$showID)
+```
+
