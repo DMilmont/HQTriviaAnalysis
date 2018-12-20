@@ -397,12 +397,10 @@ payoutData %>%
     legend.position="none")
 ```
 
-\newpage
----------------------------------------------------------------------------------------------------------
-  
+
     
 
-###2.  Is there a question category type which is the easiest and conversely, the most difficult (looking at the number of players who get the question right)? 
+Is there a question category type which is the easiest and conversely, the most difficult (looking at the number of players who get the question right)? 
 Of savage questions, what categories have the most savage question results?
 
 #### <span style="color:blue"> The top 3 easiest categories would be Culture, Science and Games with correct ratios as .94, .87 and .86 respectively. The top 3 hardest categories would be Fine Arts, Fashion and Geography with correct ratios as .40, .49 and .66 respectively. </span>
@@ -825,7 +823,7 @@ totalViewersbyDay %>%
 ```
 
 
- Are there certain days and times of week that audiences are typically larger/smaller. Is there a predictive pattern? 
+Are there certain days and times of week that audiences are typically larger/smaller. Is there a predictive pattern? 
 
 #### <span style="color:blue"> Time of day is a statistically significant factor. Compared to afternoon games, evening games have an average of 244,380 more players. 
 
