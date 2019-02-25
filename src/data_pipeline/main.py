@@ -23,9 +23,9 @@ class Launcher(object):
         self.debug = readFromConfig("General", "debug_mode")
         self.server_ip = readFromConfig("General", "server_ip")
 
-    def launchSolver(self):
+    def launchDataConsumption(self):
 
-        print(" HQ Solver ".center(get_terminal_size()[0], "="))
+        print(" HQ Trivia Data Consumption Started ".center(get_terminal_size()[0], "="))
 
         if self.showAlive():
             socketURL = self.getSocketURL()
@@ -106,4 +106,4 @@ class Launcher(object):
 
 
 if __name__ == "__main__":
-    Launcher().launchSolver()
+    Launcher().launchDataConsumption()
