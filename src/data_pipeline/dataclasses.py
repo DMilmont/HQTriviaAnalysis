@@ -1,0 +1,2 @@
+class Data:
+    allowReconnecting = True
